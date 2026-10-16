@@ -1,0 +1,89 @@
+# 在 GitHub 云端构建 Folia v0.7.20 的安卓电视 APK (无需本地装 Android Studio)
+# 用法: 把本文件放进你 fork 的 chthollyphile/folia-major 仓库的 .github/workflows/ 下,
+#       到 Actions 页面手动运行 "Build Folia TV APK", 完成后在 Artifacts 下载 apk。
+name: Build Folia TV APK
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "要构建的 tag"
+        default: "v0.7.20"
+      webdir:
+        description: "vite 构建输出目录"
+        default: "dist"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc   # 项目自己声明的 Node 版本
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17            # Capacitor 6 对应 JDK 17
+
+      - name: 安装依赖并构建 Web 版
+        run: |
+          npm ci
+          npm install --no-save @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
+          npx vite build
+          echo "=== 构建输出目录 ===" && ls -la ${{ inputs.webdir }} | head
+
+      - name: 生成 Capacitor 配置并添加 Android 工程
+        run: |
+          cat > capacitor.config.json << CFG
+          {
+            "appId": "com.folia.tv",
+            "appName": "Folia",
+            "webDir": "${{ inputs.webdir }}",
+            "server": { "androidScheme": "http", "cleartext": true }
+          }
+          CFG
+          npx cap add android
+          npx cap sync android
+
+      - name: 适配电视 (Leanback 入口 / 横幅 / 常亮)
+        run: |
+          python3 - << 'PY'
+          import re, pathlib, glob
+          m = pathlib.Path("android/app/src/main/AndroidManifest.xml")
+          s = m.read_text()
+          s = s.replace("<application", '''<uses-feature android:name="android.software.leanback" android:required="false" />
+              <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+              <application android:banner="@drawable/tv_banner"''', 1)
+          s = s.replace('<category android:name="android.intent.category.LAUNCHER" />',
+              '<category android:name="android.intent.category.LAUNCHER" />\n'
+              '                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />', 1)
+          m.write_text(s)
+          f = glob.glob("android/app/src/main/java/**/MainActivity.java", recursive=True)[0]
+          j = pathlib.Path(f); t = j.read_text()
+          t = re.sub(r"public class MainActivity extends BridgeActivity \{\s*\}",
+            '''public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(android.os.Bundle b) {
+                super.onCreate(b);
+                getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+              }
+          }''', t)
+          j.write_text(t)
+          PY
+          mkdir -p android/app/src/main/res/drawable
+          convert -size 320x180 xc:'#111827' -fill white -pointsize 56 -gravity center \
+            -annotate 0 "Folia" android/app/src/main/res/drawable/tv_banner.png
+          grep -n "LEANBACK\|banner\|leanback" android/app/src/main/AndroidManifest.xml
+
+      - name: 构建 debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: folia-tv-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
