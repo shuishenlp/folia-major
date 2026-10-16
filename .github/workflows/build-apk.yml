@@ -18,6 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          repository: 'chthollyphile/folia-major' # 强制直接从源仓库拉取
           ref: ${{ inputs.ref }}
 
       - uses: actions/setup-node@v4
